@@ -78,10 +78,6 @@ export async function PATCH(
       updateData.reviewedAt = new Date()
     }
 
-    if (status === "MENTOR_ASSIGNED" && mentorId) {
-      updateData.mentorAssignedAt = new Date()
-    }
-
     if (status === "IN_PROGRESS") {
       updateData.startedAt = new Date()
     }
@@ -99,8 +95,13 @@ export async function PATCH(
       data: updateData,
     })
 
-    // Create or update mentor assignment
-    if (mentorId && status === "MENTOR_ASSIGNED") {
+    // Handle mentor assignment - works for any status
+    const existingAssignment = await prisma.mentorAssignment.findUnique({
+      where: { applicationId: params.id },
+    })
+
+    if (mentorId) {
+      // Create or update mentor assignment
       await prisma.mentorAssignment.upsert({
         where: { applicationId: params.id },
         update: { mentorId },
@@ -110,9 +111,33 @@ export async function PATCH(
           slaMode: "LIGHT",
         },
       })
+
+      // Set mentorAssignedAt timestamp if not already set
+      if (!application.mentorAssignedAt) {
+        await prisma.application.update({
+          where: { id: params.id },
+          data: { mentorAssignedAt: new Date() },
+        })
+      }
+    } else if (existingAssignment) {
+      // Remove mentor assignment if mentorId is empty but assignment exists
+      await prisma.mentorAssignment.delete({
+        where: { applicationId: params.id },
+      })
     }
 
     // Create notification
+    let notificationMessage = `Your application status has been updated to ${status}`
+    if (mentorId) {
+      const mentor = await prisma.user.findUnique({
+        where: { id: mentorId },
+        select: { name: true },
+      })
+      if (mentor) {
+        notificationMessage += `. Mentor ${mentor.name} has been assigned to you.`
+      }
+    }
+
     await prisma.notification.create({
       data: {
         userId: application.studentId,
@@ -120,7 +145,7 @@ export async function PATCH(
         payload: {
           applicationId: params.id,
           newStatus: status,
-          message: `Your application status has been updated to ${status}`,
+          message: notificationMessage,
         },
       },
     })
